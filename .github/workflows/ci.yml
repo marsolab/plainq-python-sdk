@@ -1,0 +1,77 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run python scripts/generate.py
+      - run: git diff --exit-code -- src/plainq/v1
+      - run: uv run pytest -q
+      - run: uv build
+      - run: uv run twine check dist/*
+      - name: Install wheel in a clean environment
+        run: |
+          uv venv "$RUNNER_TEMP/consumer"
+          uv pip install --python "$RUNNER_TEMP/consumer/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          consumer/bin/python -c 'from plainq import Client, AsyncClient, v1; Client("localhost:8080").close()'
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: marsolab/plainq
+          ref: 22ae8ce1faf01e560d389c51179247f240a6b7e6
+          path: .broker-source
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .broker-source/go.mod
+          cache-dependency-path: .broker-source/go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - name: Build pinned PlainQ broker
+        run: |
+          cd .broker-source/internal/houston/ui
+          bun install --frozen-lockfile
+          bun run build
+          cd ../../..
+          go build -o "$RUNNER_TEMP/plainq" ./cmd
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+      - run: uv sync --locked
+      - name: Start disposable broker
+        run: |
+          "$RUNNER_TEMP/plainq" serve -grpc.addr 127.0.0.1:18080 -http.addr 127.0.0.1:18081 -storage.path "$RUNNER_TEMP/plainq.db" -auth.enable=false -telemetry.enable=false -auth.jwt.secret "$(openssl rand -hex 32)" > "$RUNNER_TEMP/plainq.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/plainq.pid"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18081/health >/dev/null; then exit 0; fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/plainq.pid")" 2>/dev/null; then cat "$RUNNER_TEMP/plainq.log"; exit 1; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/plainq.log"
+          exit 1
+      - run: uv run pytest -m integration -q
+        env:
+          PLAINQ_ADDR: 127.0.0.1:18080
+      - name: Broker logs and cleanup
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/plainq.log" 2>/dev/null || true
+          if test -f "$RUNNER_TEMP/plainq.pid"; then kill "$(cat "$RUNNER_TEMP/plainq.pid")" || true; fi

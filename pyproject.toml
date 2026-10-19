@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "plainq-sdk"
+version = "0.1.0"
+description = "Native gRPC client for PlainQ queues and topics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Marsolab"}]
+dependencies = ["grpcio>=1.78.0,<2", "protobuf>=6.31.1,<7"]
+
+[project.urls]
+Homepage = "https://github.com/marsolab/plainq-python-sdk"
+Repository = "https://github.com/marsolab/plainq-python-sdk"
+Issues = "https://github.com/marsolab/plainq-python-sdk/issues"
+
+[dependency-groups]
+dev = ["grpcio-tools==1.78.0", "pytest>=8,<10", "build>=1.2", "twine>=6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/plainq"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a disposable PlainQ broker"]
+addopts = "-m 'not integration'"
